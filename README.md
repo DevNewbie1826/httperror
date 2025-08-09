@@ -134,6 +134,53 @@ func main() {
 }
 ```
 
+#### Usage with `chi` router
+
+When using a router like `chi`, you might want to handle routing errors (like 404 Not Found or 405 Method Not Allowed) in the same way as your application errors. `chi` allows you to set custom handlers for these cases.
+
+You can integrate `httperror` by setting custom handlers that use the `Report...` functions.
+
+**Important:** The `httperror.ErrorReporterMiddleware` must be registered before your routes so that the context is available to the `NotFound` and `MethodNotAllowed` handlers.
+
+```go
+package main
+
+import (
+	"log"
+	"net/http"
+
+	"github.com/DevNewbie1826/httperror"
+	"github.com/go-chi/chi/v5"
+)
+
+func main() {
+	r := chi.NewRouter()
+
+	// The ErrorReporterMiddleware must be applied before the router's handlers.
+	// This ensures the context is available for the NotFound and MethodNotAllowed handlers.
+	r.Use(httperror.ErrorReporterMiddleware)
+
+	r.Get("/hello", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("Hello, World!"))
+	})
+
+	// Override chi's default NotFound handler
+	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
+		httperror.ReportNotFound(r, "The requested resource path does not exist.")
+	})
+
+	// Override chi's default MethodNotAllowed handler
+	r.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
+		httperror.ReportMethodNotAllowed(r)
+	})
+
+	log.Println("Server starting on :8080 with chi")
+	if err := http.ListenAndServe(":8080", r); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
 ---
 
 ## 한국어
@@ -258,6 +305,53 @@ func main() {
 
 	log.Println("Server starting on :8080")
 	if err := http.ListenAndServe(":8080", errorMiddleware(mux)); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+#### `chi` 라우터와 함께 사용하기
+
+`chi`와 같은 라우터를 사용할 때, 라우팅 오류(404 Not Found, 405 Method Not Allowed 등)를 애플리케이션 오류와 동일한 방식으로 처리하고 싶을 수 있습니다. `chi`는 이러한 경우를 위한 사용자 정의 핸들러 설정을 지원합니다.
+
+`Report...` 함수를 사용하는 커스텀 핸들러를 설정하여 `httperror`를 통합할 수 있습니다.
+
+**중요:** `httperror.ErrorReporterMiddleware`는 `NotFound` 및 `MethodNotAllowed` 핸들러가 컨텍스트에 접근할 수 있도록 라우트보다 먼저 등록되어야 합니다.
+
+```go
+package main
+
+import (
+	"log"
+	"net/http"
+
+	"github.com/DevNewbie1826/httperror"
+	"github.com/go-chi/chi/v5"
+)
+
+func main() {
+	r := chi.NewRouter()
+
+	// ErrorReporterMiddleware는 라우터의 핸들러들보다 먼저 적용되어야 합니다.
+	// 이렇게 해야 NotFound, MethodNotAllowed 핸들러에서 컨텍스트를 사용할 수 있습니다.
+	r.Use(httperror.ErrorReporterMiddleware)
+
+	r.Get("/hello", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("Hello, World!"))
+	})
+
+	// chi의 기본 NotFound 핸들러를 오버라이드합니다.
+	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
+		httperror.ReportNotFound(r, "요청하신 리소스 경로는 존재하지 않습니다.")
+	})
+
+	// chi의 기본 MethodNotAllowed 핸들러를 오버라이드합니다.
+	r.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
+		httperror.ReportMethodNotAllowed(r)
+	})
+
+	log.Println("Server starting on :8080 with chi")
+	if err := http.ListenAndServe(":8080", r); err != nil {
 		log.Fatal(err)
 	}
 }
