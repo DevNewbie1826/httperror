@@ -2,6 +2,7 @@
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/DevNewbie1826/httperror)](https://goreportcard.com/report/github.com/DevNewbie1826/httperror)
 [![GoDoc](https://godoc.org/github.com/DevNewbie1826/httperror?status.svg)](https://godoc.org/github.com/DevNewbie1826/httperror)
+[![codecov](https://codecov.io/gh/DevNewbie1826/httperror/graph/badge.svg)](https://codecov.io/gh/DevNewbie1826/httperror)
 
 A simple Go middleware for centralized HTTP error handling, with convenient helper functions for generating standard HTTP error responses.
 
@@ -356,3 +357,9 @@ func main() {
 	}
 }
 ```
+
+---
+
+## 📜 License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

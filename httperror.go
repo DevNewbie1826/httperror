@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 )
 
 // --- Context-based Error Reporter Middleware ---
@@ -67,21 +68,30 @@ func NewErrorReporterMiddleware(handler ErrorHandler) func(http.Handler) http.Ha
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var handlerError error
-
-			// The function that handlers will call to report an error.
 			reportError := func(err error) {
 				handlerError = err
 			}
-
-			// Add the reporter function to the context.
 			ctx := context.WithValue(r.Context(), errorKey, reportError)
 
-			// Call the next handler with the new context.
-			next.ServeHTTP(w, r.WithContext(ctx))
+			// We use a recorder to buffer the response from the next handler.
+			recorder := httptest.NewRecorder()
 
-			// After the handler has run, check if an error was reported and handle it.
+			// Call the next handler with the recorder and the new context.
+			next.ServeHTTP(recorder, r.WithContext(ctx))
+
+			// After the handler has run, check if an error was reported.
 			if handlerError != nil {
+				// An error was reported, so we discard the buffered response
+				// and call the error handler with the original ResponseWriter.
 				handler(w, r, handlerError)
+			} else {
+				// No error was reported, so we write the buffered response
+				// to the original ResponseWriter.
+				for k, v := range recorder.Header() {
+					w.Header()[k] = v
+				}
+				w.WriteHeader(recorder.Code)
+				recorder.Body.WriteTo(w)
 			}
 		})
 	}
