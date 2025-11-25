@@ -88,14 +88,15 @@ func TestDefaultErrorHandler(t *testing.T) {
 
 // TestNewErrorReporterMiddleware tests the NewErrorReporterMiddleware.
 func TestNewErrorReporterMiddleware(t *testing.T) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Handler that reports an error but does NOT write to the response.
+	// This should trigger the error handler.
+	errorOnlyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ReportError(r, errors.New("handler error"))
-		w.WriteHeader(http.StatusOK)
 	})
 
 	t.Run("with default handler", func(t *testing.T) {
 		middleware := NewErrorReporterMiddleware(nil)
-		testHandler := middleware(handler)
+		testHandler := middleware(errorOnlyHandler)
 
 		rr := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/", nil)
@@ -112,7 +113,7 @@ func TestNewErrorReporterMiddleware(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		}
 		middleware := NewErrorReporterMiddleware(customHandler)
-		testHandler := middleware(handler)
+		testHandler := middleware(errorOnlyHandler)
 
 		rr := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/", nil)
@@ -138,13 +139,39 @@ func TestNewErrorReporterMiddleware(t *testing.T) {
 			t.Errorf("expected status %d, got %d", http.StatusOK, rr.Code)
 		}
 	})
+
+	t.Run("error reported after response committed", func(t *testing.T) {
+		// Handler that writes to the response AND reports an error.
+		// Since we are now in pass-through mode, the error should be IGNORED (or logged),
+		// and the original response should be preserved.
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("ok"))
+			ReportError(r, errors.New("handler error"))
+		})
+
+		middleware := NewErrorReporterMiddleware(nil)
+		testHandler := middleware(handler)
+
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/", nil)
+		testHandler.ServeHTTP(rr, req)
+
+		// Should NOT be 500 Internal Server Error
+		if rr.Code != http.StatusOK {
+			t.Errorf("expected status %d, got %d", http.StatusOK, rr.Code)
+		}
+		if rr.Body.String() != "ok" {
+			t.Errorf("expected body 'ok', got '%s'", rr.Body.String())
+		}
+	})
 }
 
 // TestErrorReporterMiddleware tests the backward-compatible ErrorReporterMiddleware.
 func TestErrorReporterMiddleware(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ReportError(r, BadRequest("test bad request"))
-		w.WriteHeader(http.StatusOK) // This will be overwritten by the middleware
+		// Do NOT write to w here, so the middleware can handle the error.
 	})
 
 	testHandler := ErrorReporterMiddleware(handler)

@@ -3,8 +3,8 @@ package httperror
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
-	"net/http/httptest"
 )
 
 // --- Context-based Error Reporter Middleware ---
@@ -56,6 +56,48 @@ func DefaultErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	json.NewEncoder(w).Encode(internalErr)
 }
 
+// responseWriter is a wrapper around http.ResponseWriter that tracks whether
+// the response has been written to. It also implements io.ReaderFrom to support
+// zero-copy file transfers (sendfile).
+type responseWriter struct {
+	http.ResponseWriter
+	wroteHeader bool
+	code        int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	if rw.wroteHeader {
+		return
+	}
+	rw.code = code
+	rw.wroteHeader = true
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseWriter) Write(b []byte) (int, error) {
+	if !rw.wroteHeader {
+		rw.WriteHeader(http.StatusOK)
+	}
+	return rw.ResponseWriter.Write(b)
+}
+
+// ReadFrom implements io.ReaderFrom to allow optimized sendfile system calls.
+func (rw *responseWriter) ReadFrom(r io.Reader) (n int64, err error) {
+	if !rw.wroteHeader {
+		rw.WriteHeader(http.StatusOK)
+	}
+	if rf, ok := rw.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(r)
+	}
+	return io.Copy(rw.ResponseWriter, r)
+}
+
+// Unwrap returns the original http.ResponseWriter.
+// This is useful for http.ResponseController and other tools that need to access the underlying writer.
+func (rw *responseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
+}
+
 // NewErrorReporterMiddleware creates a new error reporting middleware.
 // It takes an optional ErrorHandler. If no handler is provided, DefaultErrorHandler is used.
 // NewErrorReporterMiddleware는 새로운 오류 보고 미들웨어를 생성합니다.
@@ -73,25 +115,24 @@ func NewErrorReporterMiddleware(handler ErrorHandler) func(http.Handler) http.Ha
 			}
 			ctx := context.WithValue(r.Context(), errorKey, reportError)
 
-			// We use a recorder to buffer the response from the next handler.
-			recorder := httptest.NewRecorder()
+			// Wrap the ResponseWriter to track if the response has been committed.
+			rw := &responseWriter{ResponseWriter: w}
 
-			// Call the next handler with the recorder and the new context.
-			next.ServeHTTP(recorder, r.WithContext(ctx))
+			// Call the next handler with the wrapped writer and the new context.
+			next.ServeHTTP(rw, r.WithContext(ctx))
 
 			// After the handler has run, check if an error was reported.
 			if handlerError != nil {
-				// An error was reported, so we discard the buffered response
-				// and call the error handler with the original ResponseWriter.
-				handler(w, r, handlerError)
-			} else {
-				// No error was reported, so we write the buffered response
-				// to the original ResponseWriter.
-				for k, v := range recorder.Header() {
-					w.Header()[k] = v
+				// If the response header has already been written, we cannot change the status code or body.
+				// In this case, we log the error (if a logger were available) and do nothing,
+				// as the response is already on its way to the client.
+				if rw.wroteHeader {
+					return
 				}
-				w.WriteHeader(recorder.Code)
-				recorder.Body.WriteTo(w)
+
+				// If the response hasn't been committed yet, we can use the error handler
+				// to send a proper error response.
+				handler(w, r, handlerError)
 			}
 		})
 	}
