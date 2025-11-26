@@ -192,3 +192,44 @@ func TestErrorReporterMiddleware(t *testing.T) {
 		t.Errorf("expected message 'test bad request', got '%s'", body.Message)
 	}
 }
+
+func TestNilHttpErrorPanic(t *testing.T) {
+	t.Run("Middleware", func(t *testing.T) {
+		// Create a handler that reports a typed nil error
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var err *HttpError = nil
+			ReportError(r, err)
+		})
+
+		// Wrap with middleware
+		middleware := ErrorReporterMiddleware(handler)
+
+		// Create a request
+		req := httptest.NewRequest("GET", "/", nil)
+		rr := httptest.NewRecorder()
+
+		// This should not panic
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("The code panicked: %v", r)
+			}
+		}()
+
+		middleware.ServeHTTP(rr, req)
+	})
+
+	t.Run("DefaultErrorHandler", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/", nil)
+		rr := httptest.NewRecorder()
+		var err *HttpError = nil
+
+		// This should not panic
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("The code panicked: %v", r)
+			}
+		}()
+
+		DefaultErrorHandler(rr, req, err)
+	})
+}

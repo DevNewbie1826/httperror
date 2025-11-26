@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 )
 
 // --- Context-based Error Reporter Middleware ---
@@ -37,27 +38,49 @@ func ReportError(r *http.Request, err error) {
 type ErrorHandler func(w http.ResponseWriter, r *http.Request, err error)
 
 // DefaultErrorHandler provides a default implementation for handling errors.
-// It checks if the error is an HttpError and writes the appropriate JSON response.
+// It checks if the error is an HttpError and writes the appropriate JSON or HTML response
+// based on the Request's Accept header.
 // For any other error, it returns a 500 Internal Server Error.
 // DefaultErrorHandler는 오류 처리를 위한 기본 구현을 제공합니다.
-// 오류가 HttpError인지 확인하고 적절한 JSON 응답을 작성합니다.
+// 오류가 HttpError인지 확인하고 요청의 Accept 헤더에 따라 적절한 JSON 또는 HTML 응답을 작성합니다.
 // 다른 모든 오류에 대해서는 500 내부 서버 오류를 반환합니다.
 func DefaultErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-
-	// Check if the error is a known HttpError.
-	if httpErr, ok := err.(*HttpError); ok {
-		w.WriteHeader(httpErr.Status)
-		json.NewEncoder(w).Encode(httpErr)
-		return
+	// Simple Content Negotiation:
+	// If the client prefers HTML (e.g. HTMX, Browser), send a simple text response.
+	// Otherwise, default to JSON.
+	accept := r.Header.Get("Accept")
+	useHTML := false
+	if accept != "" {
+		// Very basic check. For robust negotiation, a library like golang.org/x/net/http/httpguts is needed,
+		// but here we just check if text/html is present.
+		// Browsers send text/html,application/xhtml+xml,...
+		if strings.Contains(accept, "text/html") || strings.Contains(accept, "application/xhtml+xml") {
+			useHTML = true
+		}
 	}
 
-	// For any other error, return a 500 Internal Server Error.
-	// It's a good practice to log the actual error here.
-	internalErr := InternalServerError() // Using the helper from httperror_helpers.go
-	w.WriteHeader(internalErr.Status)
-	json.NewEncoder(w).Encode(internalErr)
+	// Ensure we are dealing with an HttpError
+	var httpErr *HttpError
+	if e, ok := err.(*HttpError); ok && e != nil {
+		httpErr = e
+	} else {
+		httpErr = InternalServerError()
+	}
+
+	w.WriteHeader(httpErr.Status)
+
+	if useHTML {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		// Simple error page for HTMX/Browsers
+		// Using a simple template: <div class="http-error">Message</div>
+		// This is swap-friendly for HTMX.
+		io.WriteString(w, `<div class="http-error">`+httpErr.Message+`</div>`)
+	} else {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		json.NewEncoder(w).Encode(httpErr)
+	}
 }
+
 
 // responseWriter is a wrapper around http.ResponseWriter that tracks whether
 // the response has been written to. It also implements io.ReaderFrom to support
@@ -65,11 +88,12 @@ func DefaultErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 type responseWriter struct {
 	http.ResponseWriter
 	wroteHeader bool
+	hijacked    bool
 	code        int
 }
 
 func (rw *responseWriter) WriteHeader(code int) {
-	if rw.wroteHeader {
+	if rw.wroteHeader || rw.hijacked {
 		return
 	}
 	rw.code = code
@@ -78,6 +102,9 @@ func (rw *responseWriter) WriteHeader(code int) {
 }
 
 func (rw *responseWriter) Write(b []byte) (int, error) {
+	if rw.hijacked {
+		return 0, http.ErrHijacked
+	}
 	if !rw.wroteHeader {
 		rw.WriteHeader(http.StatusOK)
 	}
@@ -86,6 +113,9 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 
 // ReadFrom implements io.ReaderFrom to allow optimized sendfile system calls.
 func (rw *responseWriter) ReadFrom(r io.Reader) (n int64, err error) {
+	if rw.hijacked {
+		return 0, http.ErrHijacked
+	}
 	if !rw.wroteHeader {
 		rw.WriteHeader(http.StatusOK)
 	}
@@ -103,6 +133,9 @@ func (rw *responseWriter) Unwrap() http.ResponseWriter {
 
 // Flush implements http.Flusher to allow flushing buffered data to the client.
 func (rw *responseWriter) Flush() {
+	if rw.hijacked {
+		return
+	}
 	if !rw.wroteHeader {
 		rw.WriteHeader(http.StatusOK)
 	}
@@ -113,6 +146,9 @@ func (rw *responseWriter) Flush() {
 
 // Push implements http.Pusher to support HTTP/2 server push.
 func (rw *responseWriter) Push(target string, opts *http.PushOptions) error {
+	if rw.hijacked {
+		return http.ErrHijacked
+	}
 	if p, ok := rw.ResponseWriter.(http.Pusher); ok {
 		return p.Push(target, opts)
 	}
@@ -122,7 +158,11 @@ func (rw *responseWriter) Push(target string, opts *http.PushOptions) error {
 // Hijack implements http.Hijacker to support websockets and other hijackers.
 func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if h, ok := rw.ResponseWriter.(http.Hijacker); ok {
-		return h.Hijack()
+		conn, bufrw, err := h.Hijack()
+		if err == nil {
+			rw.hijacked = true
+		}
+		return conn, bufrw, err
 	}
 	return nil, nil, errors.New("hijack not supported")
 }
@@ -140,6 +180,10 @@ func NewErrorReporterMiddleware(handler ErrorHandler) func(http.Handler) http.Ha
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var handlerError error
 			reportError := func(err error) {
+				// Ignore nil *HttpError to prevent typed nil in interface issues.
+				if e, ok := err.(*HttpError); ok && e == nil {
+					return
+				}
 				handlerError = err
 			}
 			ctx := context.WithValue(r.Context(), errorKey, reportError)
@@ -155,7 +199,7 @@ func NewErrorReporterMiddleware(handler ErrorHandler) func(http.Handler) http.Ha
 				// If the response header has already been written, we cannot change the status code or body.
 				// In this case, we log the error (if a logger were available) and do nothing,
 				// as the response is already on its way to the client.
-				if rw.wroteHeader {
+				if rw.wroteHeader || rw.hijacked {
 					return
 				}
 
