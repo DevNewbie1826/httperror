@@ -142,8 +142,8 @@ func TestNewErrorReporterMiddleware(t *testing.T) {
 
 	t.Run("error reported after response committed", func(t *testing.T) {
 		// Handler that writes to the response AND reports an error.
-		// Since we are now in pass-through mode, the error should be IGNORED (or logged),
-		// and the original response should be preserved.
+		// Since we are now in pass-through mode, the error should cause an abort panic
+		// to prevent client hang.
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("ok"))
@@ -155,15 +155,19 @@ func TestNewErrorReporterMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/", nil)
-		testHandler.ServeHTTP(rr, req)
 
-		// Should NOT be 500 Internal Server Error
-		if rr.Code != http.StatusOK {
-			t.Errorf("expected status %d, got %d", http.StatusOK, rr.Code)
-		}
-		if rr.Body.String() != "ok" {
-			t.Errorf("expected body 'ok', got '%s'", rr.Body.String())
-		}
+		// Expect panic
+		defer func() {
+			r := recover()
+			if r != http.ErrAbortHandler {
+				t.Errorf("Expected panic http.ErrAbortHandler, got %v", r)
+			}
+		}()
+
+		testHandler.ServeHTTP(rr, req)
+		
+		// Note: In a real server, the panic would be caught by the server,
+		// and the connection closed. The response body 'ok' might still be sent partially.
 	})
 }
 

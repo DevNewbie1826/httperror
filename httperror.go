@@ -116,12 +116,16 @@ func (rw *responseWriter) ReadFrom(r io.Reader) (n int64, err error) {
 	if rw.hijacked {
 		return 0, http.ErrHijacked
 	}
-	if !rw.wroteHeader {
-		rw.WriteHeader(http.StatusOK)
-	}
 	if rf, ok := rw.ResponseWriter.(io.ReaderFrom); ok {
-		return rf.ReadFrom(r)
+		n, err = rf.ReadFrom(r)
+		// Assume the underlying ReadFrom committed the response if it succeeded (or partially succeeded).
+		// We mark wroteHeader as true to prevent duplicate WriteHeader calls later.
+		if n > 0 || err == nil {
+			rw.wroteHeader = true
+		}
+		return n, err
 	}
+	// Fallback to io.Copy which calls Write, which handles WriteHeader.
 	return io.Copy(rw.ResponseWriter, r)
 }
 
@@ -200,7 +204,12 @@ func NewErrorReporterMiddleware(handler ErrorHandler) func(http.Handler) http.Ha
 				// In this case, we log the error (if a logger were available) and do nothing,
 				// as the response is already on its way to the client.
 				if rw.wroteHeader || rw.hijacked {
-					return
+					// If the headers were written but an error occurred, the response might be incomplete
+					// (e.g. Content-Length set but body not written). To prevent the client from hanging
+					// or receiving a corrupt response, we must abort the handler.
+					// http.ErrAbortHandler is a special sentinel error that tells the net/http server
+					// to abort the request and close the connection (HTTP/1.x) or reset the stream (HTTP/2).
+					panic(http.ErrAbortHandler)
 				}
 
 				// If the response hasn't been committed yet, we can use the error handler
