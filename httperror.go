@@ -98,6 +98,13 @@ func (rw *responseWriter) Unwrap() http.ResponseWriter {
 	return rw.ResponseWriter
 }
 
+// Flush implements http.Flusher to allow flushing buffered data to the client.
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // NewErrorReporterMiddleware creates a new error reporting middleware.
 // It takes an optional ErrorHandler. If no handler is provided, DefaultErrorHandler is used.
 // NewErrorReporterMiddleware는 새로운 오류 보고 미들웨어를 생성합니다.
