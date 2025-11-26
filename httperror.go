@@ -1,9 +1,12 @@
 package httperror
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 )
 
@@ -106,6 +109,22 @@ func (rw *responseWriter) Flush() {
 	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Push implements http.Pusher to support HTTP/2 server push.
+func (rw *responseWriter) Push(target string, opts *http.PushOptions) error {
+	if p, ok := rw.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
+}
+
+// Hijack implements http.Hijacker to support websockets and other hijackers.
+func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := rw.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, errors.New("hijack not supported")
 }
 
 // NewErrorReporterMiddleware creates a new error reporting middleware.
