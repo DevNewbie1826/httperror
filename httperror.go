@@ -205,6 +205,16 @@ func NewErrorReporterMiddleware(handler ErrorHandler) func(http.Handler) http.Ha
 
 				// If the response hasn't been committed yet, we can use the error handler
 				// to send a proper error response.
+
+				// CRITICAL: Clear headers set by the application handler.
+				// If the handler set "Content-Length" but failed to write the body, keeping it
+				// will cause the client to hang waiting for bytes that will never come.
+				// We also want to avoid leaking headers intended for a success response.
+				headers := w.Header()
+				for k := range headers {
+					delete(headers, k)
+				}
+
 				handler(w, r, handlerError)
 			}
 		})
