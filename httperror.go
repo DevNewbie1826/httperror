@@ -100,6 +100,9 @@ func (rw *responseWriter) Unwrap() http.ResponseWriter {
 
 // Flush implements http.Flusher to allow flushing buffered data to the client.
 func (rw *responseWriter) Flush() {
+	if !rw.wroteHeader {
+		rw.WriteHeader(http.StatusOK)
+	}
 	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
