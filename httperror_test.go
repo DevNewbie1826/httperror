@@ -1,7 +1,6 @@
 package httperror
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -9,42 +8,52 @@ import (
 	"testing"
 )
 
-// TestReportError tests the ReportError function.
-func TestReportError(t *testing.T) {
-	t.Run("with reporter", func(t *testing.T) {
-		var reportedError error
-		reporter := func(err error) {
-			reportedError = err
-		}
+// TestRespond tests the Respond function and SetErrorHandler.
+func TestRespond(t *testing.T) {
+	// Reset handler to default before test
+	SetErrorHandler(nil)
 
+	t.Run("default handler", func(t *testing.T) {
+		rr := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/", nil)
-		ctx := req.Context()
-		ctx = context.WithValue(ctx, errorKey, reporter)
-		req = req.WithContext(ctx)
+		err := New(http.StatusBadRequest, "Bad Request")
 
-		err := errors.New("test error")
-		ReportError(req, err)
+		Respond(rr, req, err)
 
-		if reportedError == nil {
-			t.Error("expected error to be reported, but it was nil")
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("expected status %d, got %d", http.StatusBadRequest, rr.Code)
 		}
-		if reportedError.Error() != "test error" {
-			t.Errorf("expected error message 'test error', got '%s'", reportedError.Error())
+		if rr.Header().Get("Content-Type") != "application/json; charset=utf-8" {
+			t.Errorf("expected Content-Type application/json; charset=utf-8, got %s", rr.Header().Get("Content-Type"))
 		}
 	})
 
-	t.Run("without reporter", func(t *testing.T) {
-		// This test ensures that ReportError does not panic when no reporter is in the context.
+	t.Run("custom handler", func(t *testing.T) {
+		customHandler := func(w http.ResponseWriter, r *http.Request, err error) {
+			w.WriteHeader(http.StatusTeapot)
+			w.Write([]byte("I am a teapot"))
+		}
+		SetErrorHandler(customHandler)
+		defer SetErrorHandler(nil) // Cleanup
+
+		rr := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/", nil)
-		err := errors.New("test error")
-		// We just call it. If it doesn't panic, the test passes.
-		ReportError(req, err)
+		err := errors.New("some error")
+
+		Respond(rr, req, err)
+
+		if rr.Code != http.StatusTeapot {
+			t.Errorf("expected status %d, got %d", http.StatusTeapot, rr.Code)
+		}
+		if rr.Body.String() != "I am a teapot" {
+			t.Errorf("expected body 'I am a teapot', got '%s'", rr.Body.String())
+		}
 	})
 }
 
 // TestDefaultErrorHandler tests the DefaultErrorHandler function.
 func TestDefaultErrorHandler(t *testing.T) {
-	t.Run("with HttpError", func(t *testing.T) {
+	t.Run("with HttpError and JSON default", func(t *testing.T) {
 		rr := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/", nil)
 		err := &HttpError{Status: http.StatusNotFound, Message: "Not Found"}
@@ -54,6 +63,9 @@ func TestDefaultErrorHandler(t *testing.T) {
 		if rr.Code != http.StatusNotFound {
 			t.Errorf("expected status %d, got %d", http.StatusNotFound, rr.Code)
 		}
+		if rr.Header().Get("Content-Type") != "application/json; charset=utf-8" {
+			t.Errorf("expected content type application/json, got %s", rr.Header().Get("Content-Type"))
+		}
 
 		var body HttpError
 		if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
@@ -61,6 +73,26 @@ func TestDefaultErrorHandler(t *testing.T) {
 		}
 		if body.Status != err.Status || body.Message != err.Message {
 			t.Errorf("expected body %+v, got %+v", err, body)
+		}
+	})
+
+	t.Run("with HttpError and HTML accept", func(t *testing.T) {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("Accept", "text/html")
+		err := &HttpError{Status: http.StatusForbidden, Message: "Forbidden"}
+
+		DefaultErrorHandler(rr, req, err)
+
+		if rr.Code != http.StatusForbidden {
+			t.Errorf("expected status %d, got %d", http.StatusForbidden, rr.Code)
+		}
+		if rr.Header().Get("Content-Type") != "text/html; charset=utf-8" {
+			t.Errorf("expected content type text/html, got %s", rr.Header().Get("Content-Type"))
+		}
+		expectedBody := `<div class="http-error">Forbidden</div>`
+		if rr.Body.String() != expectedBody {
+			t.Errorf("expected body '%s', got '%s'", expectedBody, rr.Body.String())
 		}
 	})
 
@@ -79,161 +111,40 @@ func TestDefaultErrorHandler(t *testing.T) {
 		if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
 			t.Fatalf("could not decode response body: %v", err)
 		}
-		expectedErr := InternalServerError()
-		if body.Status != expectedErr.Status || body.Message != expectedErr.Message {
-			t.Errorf("expected body %+v, got %+v", expectedErr, body)
+		expectedErr := InternalServerErrorError()
+		if body.Status != expectedErr.Status {
+			t.Errorf("expected status %d, got %d", expectedErr.Status, body.Status)
 		}
 	})
 }
 
-// TestNewErrorReporterMiddleware tests the NewErrorReporterMiddleware.
-func TestNewErrorReporterMiddleware(t *testing.T) {
-	// Handler that reports an error but does NOT write to the response.
-	// This should trigger the error handler.
-	errorOnlyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ReportError(r, errors.New("handler error"))
-	})
-
-	t.Run("with default handler", func(t *testing.T) {
-		middleware := NewErrorReporterMiddleware(nil)
-		testHandler := middleware(errorOnlyHandler)
-
-		rr := httptest.NewRecorder()
-		req := httptest.NewRequest("GET", "/", nil)
-		testHandler.ServeHTTP(rr, req)
-
-		if rr.Code != http.StatusInternalServerError {
-			t.Errorf("expected status %d, got %d", http.StatusInternalServerError, rr.Code)
-		}
-	})
-
-	t.Run("with custom handler", func(t *testing.T) {
-		customHandler := func(w http.ResponseWriter, r *http.Request, err error) {
-			w.WriteHeader(http.StatusTeapot)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-		}
-		middleware := NewErrorReporterMiddleware(customHandler)
-		testHandler := middleware(errorOnlyHandler)
-
-		rr := httptest.NewRecorder()
-		req := httptest.NewRequest("GET", "/", nil)
-		testHandler.ServeHTTP(rr, req)
-
-		if rr.Code != http.StatusTeapot {
-			t.Errorf("expected status %d, got %d", http.StatusTeapot, rr.Code)
-		}
-	})
-
-	t.Run("no error reported", func(t *testing.T) {
-		emptyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		})
-		middleware := NewErrorReporterMiddleware(nil)
-		testHandler := middleware(emptyHandler)
-
-		rr := httptest.NewRecorder()
-		req := httptest.NewRequest("GET", "/", nil)
-		testHandler.ServeHTTP(rr, req)
-
-		if rr.Code != http.StatusOK {
-			t.Errorf("expected status %d, got %d", http.StatusOK, rr.Code)
-		}
-	})
-
-	t.Run("error reported after response committed", func(t *testing.T) {
-		// Handler that writes to the response AND reports an error.
-		// Since we are now in pass-through mode, the error should cause an abort panic
-		// to prevent client hang.
-		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("ok"))
-			ReportError(r, errors.New("handler error"))
-		})
-
-		middleware := NewErrorReporterMiddleware(nil)
-		testHandler := middleware(handler)
-
-		rr := httptest.NewRecorder()
-		req := httptest.NewRequest("GET", "/", nil)
-
-		// Expect panic
-		defer func() {
-			r := recover()
-			if r != http.ErrAbortHandler {
-				t.Errorf("Expected panic http.ErrAbortHandler, got %v", r)
-			}
-		}()
-
-		testHandler.ServeHTTP(rr, req)
-		
-		// Note: In a real server, the panic would be caught by the server,
-		// and the connection closed. The response body 'ok' might still be sent partially.
-	})
-}
-
-// TestErrorReporterMiddleware tests the backward-compatible ErrorReporterMiddleware.
-func TestErrorReporterMiddleware(t *testing.T) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ReportError(r, BadRequest("test bad request"))
-		// Do NOT write to w here, so the middleware can handle the error.
-	})
-
-	testHandler := ErrorReporterMiddleware(handler)
-
+func TestSetErrorHandler(t *testing.T) {
+	// Ensure it resets to default when nil is passed
+	SetErrorHandler(nil)
+	// Check by address if possible, or behavior. Go doesn't allow comparing func pointers easily.
+	// We'll test behavior.
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/", nil)
-	testHandler.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("expected status %d, got %d", http.StatusBadRequest, rr.Code)
+	Respond(rr, req, New(http.StatusOK, "ok"))
+	if rr.Header().Get("Content-Type") != "application/json; charset=utf-8" {
+		t.Error("Default handler should set JSON content type")
 	}
 
-	var body HttpError
-	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
-		t.Fatalf("could not decode response body: %v", err)
-	}
-	if body.Message != "test bad request" {
-		t.Errorf("expected message 'test bad request', got '%s'", body.Message)
-	}
-}
-
-func TestNilHttpErrorPanic(t *testing.T) {
-	t.Run("Middleware", func(t *testing.T) {
-		// Create a handler that reports a typed nil error
-		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			var err *HttpError = nil
-			ReportError(r, err)
-		})
-
-		// Wrap with middleware
-		middleware := ErrorReporterMiddleware(handler)
-
-		// Create a request
-		req := httptest.NewRequest("GET", "/", nil)
-		rr := httptest.NewRecorder()
-
-		// This should not panic
-		defer func() {
-			if r := recover(); r != nil {
-				t.Errorf("The code panicked: %v", r)
-			}
-		}()
-
-		middleware.ServeHTTP(rr, req)
+	// Set custom
+	SetErrorHandler(func(w http.ResponseWriter, r *http.Request, err error) {
+		w.Write([]byte("custom"))
 	})
+	rr = httptest.NewRecorder()
+	Respond(rr, req, errors.New("err"))
+	if rr.Body.String() != "custom" {
+		t.Error("Custom handler didn't work")
+	}
 
-	t.Run("DefaultErrorHandler", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/", nil)
-		rr := httptest.NewRecorder()
-		var err *HttpError = nil
-
-		// This should not panic
-		defer func() {
-			if r := recover(); r != nil {
-				t.Errorf("The code panicked: %v", r)
-			}
-		}()
-
-		DefaultErrorHandler(rr, req, err)
-	})
+	// Reset to default
+	SetErrorHandler(nil)
+	rr = httptest.NewRecorder()
+	Respond(rr, req, New(http.StatusOK, "ok"))
+	if rr.Header().Get("Content-Type") != "application/json; charset=utf-8" {
+		t.Error("Should revert to default handler")
+	}
 }

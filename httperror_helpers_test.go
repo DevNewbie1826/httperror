@@ -1,11 +1,11 @@
 package httperror
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -26,13 +26,13 @@ func TestNew(t *testing.T) {
 	}
 }
 
-// TestHelperFunctionsWithMessage tests all the helper functions that create HttpErrors.
-func TestHelperFunctionsWithMessage(t *testing.T) {
+// TestHelperFunctions tests all the helper functions (BadRequest, NotFound, etc.).
+func TestHelperFunctions(t *testing.T) {
 	testCases := []struct {
-		name     string
-		function func(...string) *HttpError
-		status   int
-		message  string
+		name           string
+		function       func(http.ResponseWriter, *http.Request, ...string)
+		expectedStatus int
+		customMessage  string
 	}{
 		{"BadRequest", BadRequest, http.StatusBadRequest, "custom bad request"},
 		{"Unauthorized", Unauthorized, http.StatusUnauthorized, "custom unauthorized"},
@@ -76,133 +76,39 @@ func TestHelperFunctionsWithMessage(t *testing.T) {
 		{"NetworkAuthenticationRequired", NetworkAuthenticationRequired, http.StatusNetworkAuthenticationRequired, "custom network authentication required"},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name+" with message", func(t *testing.T) {
-			err := tc.function(tc.message)
-			if err.Status != tc.status {
-				t.Errorf("expected status %d, got %d", tc.status, err.Status)
-			}
-			if err.Message != tc.message {
-				t.Errorf("expected message '%s', got '%s'", tc.message, err.Message)
-			}
-		})
-
-		t.Run(tc.name+" without message", func(t *testing.T) {
-			err := tc.function()
-			expectedMessage := http.StatusText(tc.status)
-			if err.Status != tc.status {
-				t.Errorf("expected status %d, got %d", tc.status, err.Status)
-			}
-			if err.Message != expectedMessage {
-				t.Errorf("expected message '%s', got '%s'", expectedMessage, err.Message)
-			}
-		})
-	}
-}
-
-// TestReportHelperFunctions tests all the reporter helper functions.
-func TestReportHelperFunctions(t *testing.T) {
-	testCases := []struct {
-		name           string
-		reporterFunc   func(*http.Request, ...string)
-		expectedStatus int
-		customMessage  string
-	}{
-		{"ReportBadRequest", ReportBadRequest, http.StatusBadRequest, "custom bad request"},
-		{"ReportUnauthorized", ReportUnauthorized, http.StatusUnauthorized, "custom unauthorized"},
-		{"ReportPaymentRequired", ReportPaymentRequired, http.StatusPaymentRequired, "custom payment required"},
-		{"ReportForbidden", ReportForbidden, http.StatusForbidden, "custom forbidden"},
-		{"ReportNotFound", ReportNotFound, http.StatusNotFound, "custom not found"},
-		{"ReportMethodNotAllowed", ReportMethodNotAllowed, http.StatusMethodNotAllowed, "custom method not allowed"},
-		{"ReportNotAcceptable", ReportNotAcceptable, http.StatusNotAcceptable, "custom not acceptable"},
-		{"ReportProxyAuthRequired", ReportProxyAuthRequired, http.StatusProxyAuthRequired, "custom proxy auth required"},
-		{"ReportRequestTimeout", ReportRequestTimeout, http.StatusRequestTimeout, "custom request timeout"},
-		{"ReportConflict", ReportConflict, http.StatusConflict, "custom conflict"},
-		{"ReportGone", ReportGone, http.StatusGone, "custom gone"},
-		{"ReportLengthRequired", ReportLengthRequired, http.StatusLengthRequired, "custom length required"},
-		{"ReportPreconditionFailed", ReportPreconditionFailed, http.StatusPreconditionFailed, "custom precondition failed"},
-		{"ReportPayloadTooLarge", ReportPayloadTooLarge, http.StatusRequestEntityTooLarge, "custom payload too large"},
-		{"ReportURITooLong", ReportURITooLong, http.StatusRequestURITooLong, "custom uri too long"},
-		{"ReportUnsupportedMediaType", ReportUnsupportedMediaType, http.StatusUnsupportedMediaType, "custom unsupported media type"},
-		{"ReportRangeNotSatisfiable", ReportRangeNotSatisfiable, http.StatusRequestedRangeNotSatisfiable, "custom range not satisfiable"},
-		{"ReportExpectationFailed", ReportExpectationFailed, http.StatusExpectationFailed, "custom expectation failed"},
-		{"ReportTeapot", ReportTeapot, http.StatusTeapot, "custom teapot"},
-		{"ReportMisdirectedRequest", ReportMisdirectedRequest, http.StatusMisdirectedRequest, "custom misdirected request"},
-		{"ReportUnprocessableEntity", ReportUnprocessableEntity, http.StatusUnprocessableEntity, "custom unprocessable entity"},
-		{"ReportLocked", ReportLocked, http.StatusLocked, "custom locked"},
-		{"ReportFailedDependency", ReportFailedDependency, http.StatusFailedDependency, "custom failed dependency"},
-		{"ReportTooEarly", ReportTooEarly, http.StatusTooEarly, "custom too early"},
-		{"ReportUpgradeRequired", ReportUpgradeRequired, http.StatusUpgradeRequired, "custom upgrade required"},
-		{"ReportPreconditionRequired", ReportPreconditionRequired, http.StatusPreconditionRequired, "custom precondition required"},
-		{"ReportTooManyRequests", ReportTooManyRequests, http.StatusTooManyRequests, "custom too many requests"},
-		{"ReportRequestHeaderFieldsTooLarge", ReportRequestHeaderFieldsTooLarge, http.StatusRequestHeaderFieldsTooLarge, "custom request header fields too large"},
-		{"ReportUnavailableForLegalReasons", ReportUnavailableForLegalReasons, http.StatusUnavailableForLegalReasons, "custom unavailable for legal reasons"},
-		{"ReportInternalServerError", ReportInternalServerError, http.StatusInternalServerError, "custom internal server error"},
-		{"ReportNotImplemented", ReportNotImplemented, http.StatusNotImplemented, "custom not implemented"},
-		{"ReportBadGateway", ReportBadGateway, http.StatusBadGateway, "custom bad gateway"},
-		{"ReportServiceUnavailable", ReportServiceUnavailable, http.StatusServiceUnavailable, "custom service unavailable"},
-		{"ReportGatewayTimeout", ReportGatewayTimeout, http.StatusGatewayTimeout, "custom gateway timeout"},
-		{"ReportHTTPVersionNotSupported", ReportHTTPVersionNotSupported, http.StatusHTTPVersionNotSupported, "custom http version not supported"},
-		{"ReportVariantAlsoNegotiates", ReportVariantAlsoNegotiates, http.StatusVariantAlsoNegotiates, "custom variant also negotiates"},
-		{"ReportInsufficientStorage", ReportInsufficientStorage, http.StatusInsufficientStorage, "custom insufficient storage"},
-		{"ReportLoopDetected", ReportLoopDetected, http.StatusLoopDetected, "custom loop detected"},
-		{"ReportNotExtended", ReportNotExtended, http.StatusNotExtended, "custom not extended"},
-		{"ReportNetworkAuthenticationRequired", ReportNetworkAuthenticationRequired, http.StatusNetworkAuthenticationRequired, "custom network authentication required"},
-	}
+	// Ensure we use the default handler for testing status codes and messages
+	SetErrorHandler(nil)
 
 	for _, tc := range testCases {
-		// With custom message
+		// Test with custom message
 		t.Run(fmt.Sprintf("%s with message", tc.name), func(t *testing.T) {
-			var reportedError error
-			reporter := func(err error) {
-				reportedError = err
-			}
+			rr := httptest.NewRecorder()
 			req := httptest.NewRequest("GET", "/", nil)
-			ctx := context.WithValue(req.Context(), errorKey, reporter)
-			req = req.WithContext(ctx)
 
-			tc.reporterFunc(req, tc.customMessage)
+			tc.function(rr, req, tc.customMessage)
 
-			if reportedError == nil {
-				t.Fatal("error was not reported")
+			if rr.Code != tc.expectedStatus {
+				t.Errorf("expected status %d, got %d", tc.expectedStatus, rr.Code)
 			}
-			httpErr, ok := reportedError.(*HttpError)
-			if !ok {
-				t.Fatalf("reported error is not of type HttpError: %T", reportedError)
-			}
-			if httpErr.Status != tc.expectedStatus {
-				t.Errorf("expected status %d, got %d", tc.expectedStatus, httpErr.Status)
-			}
-			if httpErr.Message != tc.customMessage {
-				t.Errorf("expected message '%s', got '%s'", tc.customMessage, httpErr.Message)
+			// Verify JSON body contains the message
+			if !strings.Contains(rr.Body.String(), tc.customMessage) {
+				t.Errorf("expected body to contain '%s', got '%s'", tc.customMessage, rr.Body.String())
 			}
 		})
 
-		// Without custom message
+		// Test without message (should use default status text)
 		t.Run(fmt.Sprintf("%s without message", tc.name), func(t *testing.T) {
-			var reportedError error
-			reporter := func(err error) {
-				reportedError = err
-			}
+			rr := httptest.NewRecorder()
 			req := httptest.NewRequest("GET", "/", nil)
-			ctx := context.WithValue(req.Context(), errorKey, reporter)
-			req = req.WithContext(ctx)
 
-			tc.reporterFunc(req)
+			tc.function(rr, req)
 
-			if reportedError == nil {
-				t.Fatal("error was not reported")
+			if rr.Code != tc.expectedStatus {
+				t.Errorf("expected status %d, got %d", tc.expectedStatus, rr.Code)
 			}
-			httpErr, ok := reportedError.(*HttpError)
-			if !ok {
-				t.Fatalf("reported error is not of type HttpError: %T", reportedError)
-			}
-			expectedMessage := http.StatusText(tc.expectedStatus)
-			if httpErr.Status != tc.expectedStatus {
-				t.Errorf("expected status %d, got %d", tc.expectedStatus, httpErr.Status)
-			}
-			if httpErr.Message != expectedMessage {
-				t.Errorf("expected message '%s', got '%s'", expectedMessage, httpErr.Message)
+			expectedMsg := http.StatusText(tc.expectedStatus)
+			if !strings.Contains(rr.Body.String(), expectedMsg) {
+				t.Errorf("expected body to contain '%s', got '%s'", expectedMsg, rr.Body.String())
 			}
 		})
 	}
